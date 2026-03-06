@@ -1,24 +1,34 @@
-import redis
-import time
-from db import create_remind
-r = redis.Redis(host='localhost', port=6379, decode_responses=True)
+import asyncio
+import logging
 
-print("=== Добавление напоминания ===")
+from aiogram import Bot, Dispatcher
 
-text = input("Что напомнить? ")
-seconds = int(input("Через сколько секунд? "))
+from bot.config import BOT_TOKEN
+from bot.database.db import init_db, Database
+from bot.handlers.remind import remind_router
+from bot.handlers.start import start_router
+from bot.scheduler import listener
 
-reminder_id = int(time.time())
+bot = Bot(token=BOT_TOKEN)
+dp = Dispatcher()
+db: Database | None = None
 
-key = f'reminder:{reminder_id}'
-r.setex(key, seconds, text)
+logger = logging.getLogger(__name__)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
 
-print(f"\n✓ Напоминание создано!")
-print(f"  ID: {reminder_id}")
-print(f"  Текст: {text}")
-print(f"  Сработает через {seconds} секунд")
-print(f"  Ключ в Redis: {key}")
-create_remind(reminder_id, text, seconds)
+async def main():
+    global db
+    db = init_db("sqlite+aiosqlite:///./reminders.db")
+    dp.include_router(start_router)
+    dp.include_router(remind_router)
+    logger.info("Start bot")
+    await db.create_tables()
+    asyncio.create_task(listener(bot))
+    await dp.start_polling(bot)
 
-ttl = r.ttl(key)
-print(f"\n  Осталось времени: {ttl} секунд")
+
+if __name__ == "__main__":
+    asyncio.run(main())
