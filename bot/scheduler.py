@@ -7,23 +7,34 @@ from bot.database.repository import ReminderRepository
 
 logger = logging.getLogger(__name__)
 
+POLL_INTERVAL_SECONDS = 20
+
 
 async def listener(bot):
-    print("Listening to reminders")
+    logger.info("Starting reminders listener loop")
     db = get_db()
     session = db.get_session()
-    remind = ReminderRepository(session)
+    repository = ReminderRepository(session)
 
     while True:
-        reminds = await remind.get_overdue()
-        logger.info(f"Обнаружено {len(reminds)} напоминаний")
-        for rem in reminds:
-            if rem.remind_at <= datetime.now():
-                created_at = datetime.strftime(rem.remind_at, "%Y-%m-%d")
-                text = (f"Ваше напоминание от {created_at}:\n\n"
-                        f"{rem.text}")
+        try:
+            reminders = await repository.get_overdue()
+            logger.info("Found %d overdue reminders", len(reminders))
 
-                await bot.send_message(rem.user_id, text)
-                await remind.mark_as_sent(rem.id)
-                logger.info(f"Напоминание отправлено пользователю")
-        await asyncio.sleep(20)
+            for rem in reminders:
+                if rem.remind_at <= datetime.now():
+                    created_at = datetime.strftime(rem.remind_at, "%d.%m.%Y %H:%M")
+                    text = (
+                        "🔔 Напоминание!\n\n"
+                        f"Ты просил(а) напомнить {created_at}:\n"
+                        f"{rem.text}\n\n"
+                        "Хорошего дня 😊"
+                    )
+
+                    await bot.send_message(rem.user_id, text)
+                    await repository.mark_as_sent(rem.id)
+                    logger.info("Reminder %s sent to user %s", rem.id, rem.user_id)
+        except Exception as e:
+            logger.error("Error in reminders listener loop: %s", e)
+
+        await asyncio.sleep(POLL_INTERVAL_SECONDS)
