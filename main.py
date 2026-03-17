@@ -3,13 +3,14 @@ import logging
 
 from aiogram import Bot, Dispatcher
 
-from bot.config import BOT_TOKEN, DATABASE_URL
+from bot.config import config
+from bot.consumer import start_consumer
 from bot.database.db import init_db, Database
 from bot.handlers.remind import remind_router
 from bot.handlers.start import start_router
 from bot.scheduler import listener
 
-bot = Bot(token=BOT_TOKEN)
+bot = Bot(token=config.BOT_TOKEN)
 dp = Dispatcher()
 db: Database | None = None
 
@@ -21,11 +22,11 @@ logging.basicConfig(
 
 async def main():
     global db
-    if not BOT_TOKEN:
+    if not config.BOT_TOKEN:
         logger.error("BOT_TOKEN is not set. Check your .env configuration.")
         raise RuntimeError("BOT_TOKEN is not set")
 
-    db_url = DATABASE_URL or "sqlite+aiosqlite:///./reminders.db"
+    db_url = config.DATABASE_URL or "sqlite+aiosqlite:///./reminders.db"
     logger.info(f"Initializing database with url: {db_url}")
 
     db = init_db(db_url)
@@ -35,7 +36,8 @@ async def main():
     logger.info("Creating database tables (if not exist)")
     await db.create_tables()
     logger.info("Starting reminder listener")
-    asyncio.create_task(listener(bot))
+    asyncio.create_task(listener())
+    asyncio.create_task(start_consumer(bot))
     logger.info("Starting bot polling")
     await dp.start_polling(bot)
 

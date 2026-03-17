@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -32,7 +32,7 @@ class ReminderRepository:
 
     async def get_overdue(self) -> list[Reminder]:
         """ Получить просроченные напоминания """
-        now = datetime.now()
+        now = datetime.now() + timedelta(hours=3)
         result = await self.session.execute(
             select(Reminder).where(
                 Reminder.status == "pending",
@@ -46,7 +46,7 @@ class ReminderRepository:
         await self.session.execute(
             update(Reminder)
             .where(Reminder.id == reminder_id)
-            .values(status="sent", sent_at=datetime.now())
+            .values(status="sent", sent_at=datetime.now() + timedelta(hours=3))
         )
         await self.session.commit()
 
