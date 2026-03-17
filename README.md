@@ -11,9 +11,10 @@
 
 - **Язык**: Python 3.12+
 - **Telegram‑фреймворк**: `aiogram 3`
-- **База данных**: SQLite (через `SQLAlchemy` + `aiosqlite`)
+- **База данных**: SQLite (через `SQLAlchemy` + `aiosqlite`) или PostgreSQL (через `asyncpg`)
+- **Брокер сообщений**: RabbitMQ (через `aio_pika`)
 - **Конфигурация**: `.env` + `python-dotenv`
-- **Контейнеризация**: `Docker`
+- **Контейнеризация**: `Docker` + `docker-compose`
 
 ---
 
@@ -24,7 +25,8 @@
 - `bot/states.py` — FSM‑состояния для сценария создания напоминаний.
 - `bot/handlers/start.py` — обработчик `/start`, главное меню и просмотр напоминаний.
 - `bot/handlers/remind.py` — сценарий создания напоминания (текст + дата/время).
-- `bot/scheduler.py` — фоновый слушатель, который периодически проверяет БД и рассылает просроченные напоминания.
+- `bot/scheduler.py` — фоновый слушатель, который периодически проверяет БД и кладёт просроченные напоминания в очередь RabbitMQ.
+- `bot/consumer.py` — consumer, который читает очередь RabbitMQ и отправляет напоминания в Telegram.
 - `bot/database/db.py` — инициализация async‑движка SQLAlchemy и фабрики сессий.
 - `bot/database/models.py` — модель `Reminder`.
 - `bot/database/repository.py` — репозиторий для работы с напоминаниями (CRUD + выборки).
@@ -42,6 +44,9 @@ BOT_TOKEN=твой_telegram_bot_token
 
 # Необязательно. Если не указать, используется SQLite-файл reminders.db в корне проекта.
 DATABASE_URL=sqlite+aiosqlite:///./reminders.db
+
+# RabbitMQ (обязателен для очереди напоминаний)
+RABBITMQ_URL=amqp://guest:guest@localhost:5672/
 ```
 
 Если ты оставишь `DATABASE_URL` пустым, `main.py` автоматически подставит SQLite по умолчанию.
@@ -59,9 +64,17 @@ pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-2. **Создай файл `.env`** (см. секцию выше).
+2. **Подними RabbitMQ** (например, через Docker):
 
-3. **Запусти бота**:
+```bash
+docker run -d --name rabbitmq \
+  -p 5672:5672 -p 15672:15672 \
+  rabbitmq:3-management
+```
+
+3. **Создай файл `.env`** (см. секцию выше).
+
+4. **Запусти бота**:
 
 ```bash
 python main.py
@@ -73,36 +86,34 @@ python main.py
 
 ### Запуск через Docker
 
-В репозитории уже есть `Dockerfile`, поэтому можно запустить бота в одном контейнере.
+В репозитории уже есть `Dockerfile` и `docker-compose.yml`, поэтому удобнее запускать всё через compose.
 
-1. **Создай `.env` в корне проекта** (рядом с `Dockerfile`):
+1. **Создай `.env` в корне проекта**:
 
 ```env
 BOT_TOKEN=твой_telegram_bot_token
-DATABASE_URL=sqlite+aiosqlite:///./reminders.db
+
+# PostgreSQL для docker-compose
+POSTGRES_USER=reminder
+POSTGRES_PASSWORD=reminder
+POSTGRES_DB=reminder
+DATABASE_URL=postgresql+asyncpg://reminder:reminder@db:5432/reminder
+
+# RabbitMQ для docker-compose
+RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
 ```
 
-2. **Собери образ** (выполняется из корня проекта):
+2. **Запусти сервисы**:
 
 ```bash
-docker build -t reminder-bot .
-```
-
-3. **Запусти контейнер**:
-
-```bash
-docker run --name reminder-bot \
-  --env-file .env \
-  -v $(pwd)/reminders.db:/app/reminders.db \
-  --restart unless-stopped \
-  reminder-bot
+docker compose up -d --build
 ```
 
 Пояснения:
 
-- `--env-file .env` — прокидывает в контейнер токен бота и `DATABASE_URL`;
-- `-v $(pwd)/reminders.db:/app/reminders.db` — монтирует файл базы на хосте внутрь контейнера, чтобы данные не пропадали при пересборке;
-- `--restart unless-stopped` — перезапуск контейнера, если он упал.
+- `db` — PostgreSQL (данные в volume `postgres_data`);
+- `rabbitmq` — брокер сообщений (UI доступен на `http://localhost:15672`, логин/пароль `guest/guest`);
+- `bot` — Telegram‑бот.
 
 ---
 
@@ -126,7 +137,8 @@ docker run --name reminder-bot \
 - При запуске:
   - инициализируется БД через SQLAlchemy;
   - создаются таблицы (если их ещё нет);
-  - запускается фоновая корутина‑слушатель напоминаний;
+  - запускается фоновая корутина‑слушатель напоминаний, публикующая задачи в RabbitMQ;
+  - запускается consumer, который отправляет напоминания из очереди;
   - aiogram‑диспетчер начинает принимать апдейты от Telegram.
 - При создании напоминания:
   - данные проходят через FSM (`Form.waiting_for_remind` → `Form.waiting_for_date`);
@@ -134,14 +146,15 @@ docker run --name reminder-bot \
   - напоминание сохраняется в БД со статусом `pending`.
 - Фоновый слушатель (`bot/scheduler.py`):
   - периодически (раз в несколько секунд) выбирает просроченные `pending`‑напоминания;
-  - отправляет их пользователям и помечает как `sent`.
+  - складывает их в очередь `reminders` в RabbitMQ.
+- Consumer (`bot/consumer.py`):
+  - читает очередь `reminders`;
+  - отправляет сообщения пользователям и помечает напоминания как `sent`.
 
 ---
 
 ### Идеи для дальнейшего развития
 
-- Вынести БД в отдельный сервис (например, PostgreSQL) и использовать отдельный контейнер под БД.
-- Добавить брокер сообщений (Redis + Celery или RabbitMQ), чтобы отправка напоминаний работала через очередь задач, а не через периодический опрос БД.
+- Вынести consumer в отдельный процесс/контейнер для масштабирования.
 - Добавить редактирование и удаление напоминаний.
 - Добавить многоязычную поддержку (RU/EN) и переключение языка.
-
